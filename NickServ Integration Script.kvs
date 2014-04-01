@@ -1,0 +1,959 @@
+# NickServ Integration Script
+# ===========================
+
+# Version 1.2 March 2014
+
+/*
+Copyright (C) 2010-2014 OmegaPhil (OmegaPhil+KVIrc@gmail.com)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.    See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.    If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+# EVENTS BLOCK
+# Intercepting ChanServ notices - detecting result of cs unban operation
+# Example success: 'OmegaPhil has been unbanned from #4chan.'
+event(OnChanServNotice,NickServIntegrationScript)
+{
+    # $0 = ChanServ nick
+    # $1 = ChanServ username
+    # $2 = ChanServ host
+    # $3 = message
+    
+    # Exiting if script is currently off
+    if (%NickServIntegrationScript_Settings{"Status"} == "Off") return
+
+    # Exiting if this network is not integrated into this script
+    if (%NickServIntegrationScript_NetworkData{$context.networkName} == "") return
+
+    # Detecting success message - ensure there are no mIRC control codes in the message (channel is bolded)
+    %results = $str.grep(".*has been unbanned from (.+).", $str.stripcolors($3), pr)
+    if (%results != "")
+    {
+        # Attempting to join channel (courtesy of Common Scripting Services)
+        joinpass %results[1]
+    }
+}
+
+# Intercepting logging in to servers
+event(OnIRC,NickServIntegrationScript)
+{
+    # Exiting if script is currently off
+    if (%NickServIntegrationScript_Settings{"Status"} == "Off") return
+    
+    # Exiting if this network is not integrated into this script
+    if (%NickServIntegrationScript_NetworkData{$context.networkName} == "") return
+
+    # Obtaining primary nick
+    %primaryNick = %NickServIntegrationScript_NetworkData{$context.networkName}{"Primary Nick"} 
+
+    # Making sure primaryNick is recorded for this network
+    if (%primaryNick == "")
+    {
+        # Primary nick isn't recorded for this network - erroring and exiting
+        error "The network "$context.networkName" is currently monitored with this script, however a primary nick has not been recorded."
+    }
+    
+    # Checking if current nick is not the primary nick for this network
+    if ($my.nick != %primaryNick)
+    {
+        # Its likely that I have been ghosted - changing nick
+        nick %primaryNick
+    }
+}
+
+# Intercepting start events
+event(OnKVIrcStartup,NickServIntegrationScript)
+{
+    # Running NickServIntegrationScript::Startup
+    NickServIntegrationScript::Startup
+}
+
+# Intercepting NickServ notices
+event(OnNickServNotice,NickServIntegrationScript)
+{
+    # $0 = NickServ nick
+    # $1 = NickServ username
+    # $2 = NickServ host
+    # $3 = message
+    
+    # Debug code
+    # echo "Debug - NickServ notice detected: '"$3"'\nNick: "$0
+
+    # Exiting if the nick isn't NickServ
+    if ($0 != "NickServ") return
+    
+    # Exiting if script is currently off
+    if (%NickServIntegrationScript_Settings{"Status"} == "Off") return
+    
+    # Exiting if this network is not integrated into this script
+    if (%NickServIntegrationScript_NetworkData{$context.networkName} == "") return
+    
+    # Setting message
+    %message = $3
+    
+    # Obtaining primary nick
+    %primaryNick = %NickServIntegrationScript_NetworkData{$context.networkName}{"Primary Nick"} 
+    
+    # Making sure a primary nick is recorded for this network
+    if (%primaryNick == "")
+    {
+        # Primary nick isn't recorded for this network - erroring and exiting
+        error "The network "$context.networkName" is currently monitored with this script, however a primary nick has not been recorded."
+    }    
+
+    # Obtaining password
+    %password = %NickServIntegrationScript_NetworkData{$context.networkName}{"Password"}
+
+    # Making sure the password is recorded for this network
+    if (%password == "")
+    {
+        # The password hasn't been recorded for this network - erroring and exiting
+        error "The network "$context.networkName" is currently monitored with this script, however a password has not been recorded."
+    }
+
+    # Obtaining canUseNsShortcut. Note that 0 and "" are the same to KVIrc script... so you can't tell if its been set or not. Assuming it has, and defaulting to msg
+    %canUseNsShortcut = %NickServIntegrationScript_NetworkData{$context.networkName}{"canUseNsShortcut"}
+    
+    # Checking if the message contains a timestamp (this happens when it is being played back by ZNC)
+    # Example: '[20:38:34] This nickname is registered and protected. if it is your'
+    # Checking if it starts with '[' and is at least 11 characters long
+    if ($str.mid(%message,0,1) == "[" && $str.len(%message) > 10)
+    {
+        # It is/does - checking if the 10th character is ']' - needed as a second-level check as this would probably error in the above check if the message was <10 characters long
+        if ($str.mid(%message,9,1) == "]")
+        {
+            # It is - cropping ZNC-prepended timestamp from message
+            %message = $str.mid(%message,10)
+        }
+    }
+
+    # Detecting successfull ghost kill messages
+    if (%message == "Ghost with your nick has been killed." || %message == "Ghost with your nickname has been killed.")
+    {
+        # Ghost has been successfully killed - Changing nick and exiting
+        nick %primaryNick
+        return
+    }
+    
+    # Detecting ident requests. Second form is freenode-specific
+    if ($str.mid(%message,0,42) == "This nickname is registered and protected." || $str.mid(%message,0,28) == "This nickname is registered.")
+    {
+        # Ident request received - making sure I am currently the primary nick
+        if ($my.nick != %primaryNick)
+        {
+            # I'm not the primary nick, yet I'm being requested to ident - warning user and exiting
+            warning "I have been requested to ident for the nick '"$my.nick"', however the primary nick recorded for this network ("$context.networkName") is "%primaryNick"."
+            return
+        }
+
+        # Identing based on NickServ shortcut presence or not, then exiting
+        if (%canUseNsShortcut == $true)
+        {
+            ns identify %password
+        }
+        else
+        {
+            msg NickServ identify %password
+        }
+        return
+    }
+    
+    # Detecting successful idents
+    if ($str.mid(%message,0,43) == "Password accepted - you are now recognized.")
+    {
+        # Autojoining channels (courtesy of Common Scripting Services)
+        autojoin
+        return
+    }
+    
+    # Detecting forced nick changes, presumably associated with a failed ident attempt
+    if ($str.mid(%message,0,37) == "Your nickname is now being changed to")
+    {
+        # Changing nick back to primaryNick - a number of channels will have set blanket Guest bans (which I have presumably been named to), and these will block any attempt for me to change my nick (...) - but this script hooks into the associated numeric event triggered (437), and will handle accordingly
+        nick %primaryNick
+        return
+    }
+    
+    # Detecting freenode-based 'nick released' events (to do with enforce functionality, the nick is blocked after someone is killed)
+    if (%message == $b%primaryNick$b" has been released.")
+    {
+        # Nick has been released - changing to primary nick
+        nick %primaryNick
+        return
+    }
+}
+
+
+# Intercepting numeric events (IRC server events)
+# Nick already in use
+event(433,NickServIntegrationScript)
+{
+    # Exiting if script is currently off
+    if (%NickServIntegrationScript_Settings{"Status"} == "Off") return
+    
+    # Exiting if this network is not integrated into this script
+    if (%NickServIntegrationScript_NetworkData{$context.networkName} == "") return
+    
+    # Receiving this event likely means that I have been ghosted
+    # Making sure the primary nick has been recorded for this network
+    if (%NickServIntegrationScript_NetworkData{$context.networkName}{"Primary Nick"} == "")
+    {
+        # The primary nick hasn't been recorded for this network - erroring and exiting
+        error "The network "$context.networkName" is currently monitored with this script, however a primary nick has not been recorded."
+    }
+    
+    # Obtaining primaryNick
+    %primaryNick = %NickServIntegrationScript_NetworkData{$context.networkName}{"Primary Nick"}
+    
+    # Making sure password is recorded for this network
+    if (%NickServIntegrationScript_NetworkData{$context.networkName}{"Password"} == "")
+    {
+        # The password isn't recorded for this network - erroring and exiting
+        error "The network "$context.networkName" is currently monitored with this script, however a password for the primary nick '"%primaryNick"' has not been recorded."
+    }
+    
+    # Obtaining password
+    %password = %NickServIntegrationScript_NetworkData{$context.networkName}{"Password"}
+    
+    # Obtaining canUseNsShortcut. KVIrc script cant differentiate between 0 and "", so assume the shortcut cant be used if this isnt set
+    %canUseNsShortcut = %NickServIntegrationScript_NetworkData{$context.networkName}{"canUseNsShortcut"}
+    
+    # Ghosting primary nick, based on NickServ shortcut presence or not
+    if (%canUseNsShortcut == $true)
+    {
+        ns ghost %primaryNick %password
+    }
+    else
+    {
+        msg NickServ ghost %primaryNick %password
+    }
+}
+
+# Normal: Cannot change nickname while banned or moderated on channel
+# Example: 'irc.impact-media.me.uk 437 OmegaPhil #NEWS Cannot change nickname while banned or moderated on channel'
+# Freenode: Enforce flag set on nick, needs to be released
+# Example: 'calvino.freenode.net 437 * OmegaPhil Nick/channel is temporarily unavailable'
+event(437,NickServIntegrationScript)
+{
+    # Exiting if script is currently off
+    if (%NickServIntegrationScript_Settings{"Status"} == "Off") return
+
+    # Exiting if this network is not integrated into this script
+    if (%NickServIntegrationScript_NetworkData{$context.networkName} == "") return
+
+    # Debug code
+    # echo "Debug - Event 437 detected: "$0-
+    # return
+
+    # Obtaining primaryNick
+    %primaryNick = %NickServIntegrationScript_NetworkData{$context.networkName}{"Primary Nick"}
+
+    # Making sure the primary nick has been recorded for this network
+    if (%primaryNick == "")
+    {
+        # The primary nick hasn't been recorded for this network - erroring and exiting
+        error "The network "$context.networkName" is currently monitored with this script, however a primary nick has not been recorded."
+    }
+
+    # Checking if the event comes from the freenode network or not
+    if ($context.networkName != "freenode")
+    {
+        # It doesn't - this event means that I have likely been given a guest nick, and on my script's attempt to change the nick back, I have been refused by the IRC server with this numeric 
+        # Obtaining relevant channel
+        %channel = $3
+        
+        # Informative message
+        echo "Parting "%channel" due to unauthorised blocking of attempted nick change back to the primary nick "%primaryNick"..."
+        
+        # Parting channel
+        part %channel
+        
+        # Attempting to change nick again
+        nick %primaryNick
+        return
+    }
+    else
+    {
+        # It does come from freenode - obtaining password
+        %password = %NickServIntegrationScript_NetworkData{$context.networkName}{"Password"}
+        
+        # Making sure the password has been recorded for this network
+        if (%password == "")
+        {
+            # The password hasn't been recorded for this network - erroring and exiting
+            error "The network "$context.networkName" is currently monitored with this script, however a password has not been recorded."
+        }
+        
+        # Obtaining canUseNsShortcut. KVIrc script cant differentiate between 0 and "", so assume the shortcut cant be used if this isnt set
+        %canUseNsShortcut = %NickServIntegrationScript_NetworkData{$context.networkName}{"canUseNsShortcut"}
+        
+        # 'Releasing nick' based on NickServ shortcut presence or not, then exiting
+        if (%canUseNsShortcut == $true)
+        {
+            ns release %primaryNick %password
+        }
+        else
+        {
+            msg NickServ release %primaryNick %password
+        }
+        return
+    }
+}
+
+# Unable to join banned channel event
+# Example: :irc.shakeababy.net 474 OmegaPhil #4chan :Cannot join channel (+b)
+event(474,NickServIntegrationScript)
+{
+    # Exiting if script is currently off
+    if (%NickServIntegrationScript_Settings{"Status"} == "Off") return
+
+    # Exiting if this network is not integrated into this script
+    if (%NickServIntegrationScript_NetworkData{$context.networkName} == "") return
+
+    # Debug code
+    # echo "Ban event detected: "$3
+
+    # Exiting if I'm not ident'd
+    if ($str.contains($my.umode, "r") == $false) return
+    
+    # Reacting to all 'unable to join' events regardless of how recent the successful ident was
+    # Obtaining canUseNsShortcut. KVIrc script cant differentiate between 0 and "", so assume the shortcut cant be used if this isnt set
+    %canUseNsShortcut = %NickServIntegrationScript_NetworkData{$context.networkName}{"canUseNsShortcut"}
+    
+    # Requesting unban based on NickServ shortcut presence or not (obviously only works in channels where I have significant access)
+    if (%canUseNsShortcut == $true)
+    {
+        cs unban $3
+    }
+    else
+    {
+        msg Chanserv unban $3
+    }
+}
+
+
+# ALIASES BLOCK
+# NickServIntegrationScript alias
+# Usage: NickServIntegrationScript <command>. <nothing>: Script status. h/help: This usage information. on: Turn script on. off: Turn script off
+alias(NickServIntegrationScript)
+{    
+    %usageInstructions = "Usage: NickServIntegrationScript <command>. <nothing>: Script status. h/help: This usage information. on: Turn script on. off: Turn script off."
+    
+    # Intercepting status request (nothing passed to the alias)
+    if ($0 == "")
+    {
+        echo "NickServIntegration Script is currently "%NickServIntegrationScript_Settings{"Status"}"."
+        return
+    }
+    
+    # Intercepting help requests
+    if ($0 == "h" || $0 == "help")
+    {
+        echo %usageInstructions 
+        return
+    }
+    
+    # Intercepting on request
+    if ($0 == "on")
+    {
+        # Making sure script is off
+        if (%NickServIntegrationScript_Settings{"Status"} != "Off")
+        {
+            # NickServIntegration Script is already on - warning user and exiting
+            warning "NickServIntegration Script is already on."
+            return
+        }
+        
+        # Turning script on and saving
+        %NickServIntegrationScript_Settings{"Status"} = "On"
+        NickServIntegrationScript::Save
+        
+        # Informing user script has been turned on
+        echo "NickServ Integration Script has been turned on."
+        return
+    }
+    
+    # Intercepting off request
+    if ($0 == "off")
+    {
+        # Making sure script is on
+        if (%NickServIntegrationScript_Settings{"Status"} != "On")
+        {
+            # NickServIntegration Script is already off - warning user and exiting
+            warning "NickServIntegration Script is already off."
+            return
+        }
+        
+        # Turning script off and saving
+        %NickServIntegrationScript_Settings{"Status"} = "Off"
+        NickServIntegrationScript::Save
+        
+        # Informing user script has been turned off
+        echo "NickServ Integration Script has been turned off."
+        return
+    }
+    
+    # Warning user of an unrecognised command
+    warning "Command unrecognised - use h/help for usage instructions."
+}
+
+# NickServIntegrationScript::Save alias
+alias(NickServIntegrationScript::Save)
+{
+    # Opening config file
+    %configFileID = $config.open($file.localdir("/scripts/nickserv_integration_script_settings"))
+    
+    # Saving settings
+    config.clearsection %configFileID "KVIrc"
+    config.write %configFileID "NickServIntegrationScript_Settings" $serialize(%NickServIntegrationScript_Settings)
+    
+    # Saving network data
+    config.clearsection %configFileID "NetworkData"
+    config.setsection %configFileID "NetworkData"
+    config.write %configFileID "NickServIntegrationScript_NetworkData" $serialize(%NickServIntegrationScript_NetworkData)
+
+    # Committing settings
+    config.close %configFileID
+}
+
+# NickServIntegrationScript::Startup alias
+alias(NickServIntegrationScript::Startup)
+{
+    # Ensuring that dependencies are present
+    if ($aliasBody("CommonScriptingServices::uninstall::uninstall") == "") error "Common Scripting Services has not been detected - this is required for this script to run."
+
+    # Making sure settings directory exists
+    if ($file.exists($file.localdir("/scripts/")) == 0) file.mkdir $file.localdir("/scripts/")
+
+    # Loading settings if the config file exists
+    if ($file.exists($file.localdir("/scripts/nickserv_integration_script_settings")) == $true)
+    {
+        # Opening config file
+        %configFileID = $config.open($file.localdir("/scripts/nickserv_integration_script_settings"))
+        
+        # Loading settings
+        %NickServIntegrationScript_Settings = $unserialize($config.read(%configFileID, "NickServIntegrationScript_Settings"))
+        
+        # Loading network data
+        config.setsection %configFileID "NetworkData"
+        %NickServIntegrationScript_NetworkData = $unserialize($config.read(%configFileID, "NickServIntegrationScript_NetworkData"))
+        
+        # Closing configuration file
+        config.close %configFileID
+    }
+
+    # Initialising hash data
+    if (%NickServIntegrationScript_Settings{"Status"} == "") %NickServIntegrationScript_Settings{"Status"} = "On"
+    
+    # Creating dialogs
+    # Add Network To NickServ Integration Script dialog
+    %dialog = $new(dialog,,"NickServIntegrationScript_AddNetwork")
+    %dialog->$setWindowTitle("Add Network To NickServ Integration Script")
+
+    %vbox = $new(vbox,%dialog,"VBox")
+    %layout = $new(layout,%dialog)
+    %layout->$addRowSpacing(0,30)
+    %layout->$addWidget(%vbox,0,0)
+    
+    %label_network = $new(label,%vbox)
+    %label_network->$setText("Network to add:")
+    
+    %lineedit_network = $new(lineedit,%vbox,"NetworkToAdd")
+    %dialog->%lineedit_network = %lineedit_network
+    
+    %label_primary_nick = $new(label,%vbox)
+    %label_primary_nick->$setText("Primary nick:")
+    %lineedit_primary_nick = $new(lineedit,%vbox,"PrimaryNick")
+    %dialog->%lineedit_primary_nick = %lineedit_primary_nick
+    
+    %label_password = $new(label,%vbox)
+    %label_password->$setText("Password:")
+    %lineedit_password = $new(lineedit,%vbox,"Password")
+    %dialog->%lineedit_password = %lineedit_password
+    
+    %checkbox_ns_shortcut = $new(checkbox,%vbox,"SupportsnsShortcut")
+    %checkbox_ns_shortcut->$setText("Network supports cs/ns shortcut")
+    %dialog->%checkbox_ns_shortcut = %checkbox_ns_shortcut
+
+    %hbox = $new(hbox,%dialog)
+    %layout->$addWidget(%hbox,1,0)
+
+    %button_OK = $new(button, %hbox)
+    %button_OK->$setText("OK")
+
+    %button_Cancel = $new(button, %hbox)
+    %button_Cancel->$setText("Cancel")
+
+    # Event overrides
+    privateimpl(%dialog,"showevent")
+    {
+        # Clearing widgets
+        $$->%lineedit_network->$clear
+        $$->%lineedit_primary_nick->$clear
+        $$->%lineedit_password->$clear
+        $$->%checkbox_ns_shortcut->$setChecked(0)
+        $$->%lineedit_network->$setFocus
+    }
+
+    privateimpl(%dialog,"OK")
+    {
+        # Obtaining networkToAdd
+        %networkToAdd = $$->%lineedit_network->$Text
+
+        # Checking to see if networkToAdd has been given
+        if (%networkToAdd == "")
+        {
+            # networkToAdd hasn't been given - erroring and exiting
+            dialog.message("Add Network To NickServ Integration Script", "Please specify a network to add to this script.","Warning") { }
+            $$->$hide
+            return
+        }
+        
+        # Obtaining primaryNick
+        %primaryNick = $$->%lineedit_primary_nick->$Text
+        
+        # Checking to see if primaryNick has been given
+        if (%primaryNick == "")
+        {
+            # primaryNick hasn't - erroring and exiting
+            dialog.message("Add Network To NickServ Integration Script", "Please specify a primary nick to use on "%networkToAdd".","Warning") { }
+            $$->$hide
+            return
+        }
+        
+        # Obtaining password
+        %password = $$->%lineedit_password->$Text
+        
+        # Checking to see if password has been given
+        if (%password == "")
+        {
+            # password hasn't - erroring and exiting
+            dialog.message("Add Network To NickServ Integration Script", "Please specify a password to ident with for "%primaryNick" on "%networkToAdd".","Warning") { }
+            $$->$hide
+            return
+        }
+        
+        # Obtaining canUseNsShortcut 
+        %canUseNsShortcut = $$->%checkbox_ns_shortcut->$isChecked
+        
+        # Adding the desired network to the hash and saving
+        %NickServIntegrationScript_NetworkData{%networkToAdd}{"Primary Nick"} = %primaryNick
+        %NickServIntegrationScript_NetworkData{%networkToAdd}{"Password"} = %password
+        %NickServIntegrationScript_NetworkData{%networkToAdd}{"canUseNsShortcut"} = %canUseNsShortcut
+        NickServIntegrationScript::Save
+        
+        # Echoing informative message and resetting widgets
+        dialog.message("Add Network To NickServ Integration Script", "Adding network "%networkToAdd":\n\nPrimary nick: "%primaryNick"\nPassword: "%password"\nUse ns shortcut for NickServ: "%canUseNsShortcut,"Warning") { }
+        $$->$hide
+    }
+
+    privateimpl(%dialog,"Cancel")
+    {
+        # Hiding dialog
+        $$->$hide
+    }
+    
+    objects.connect %button_OK clicked %dialog OK
+    objects.connect %button_Cancel clicked %dialog Cancel
+    
+    # Saving dialog object ID
+    %NickServIntegrationScript_Settings{"GUI"}{"NickServIntegrationScript_AddNetwork"} = %dialog
+
+    # Edit Network dialog
+    %dialog = $new(dialog,,"NickServIntegrationScript_EditNetwork")
+    %dialog->$setWindowTitle("Edit Network With NickServ Integration Script")
+
+    %vbox = $new(vbox,%dialog,"VBox")
+    %layout = $new(layout,%dialog)
+    %layout->$addRowSpacing(0,30)
+    %layout->$addWidget(%vbox,0,0)
+    
+    %label_network = $new(label,%vbox)
+    %label_network->$setText("Network to edit:")
+    
+    %listbox_network = $new(listbox,%vbox,"NetworkToEdit")
+    %dialog->%listbox_network = %listbox_network
+
+    %label_primary_nick = $new(label,%vbox)
+    %label_primary_nick->$setText("Primary nick:")
+
+    %lineedit_primary_nick = $new(lineedit,%vbox,"PrimaryNick")
+    %dialog->%lineedit_primary_nick = %lineedit_primary_nick
+
+    %label_password = $new(label,%vbox)
+    %label_password->$setText("Password:")
+    %lineedit_password = $new(lineedit,%vbox,"Password")
+    %dialog->%lineedit_password = %lineedit_password
+    
+    %checkbox_ns_shortcut = $new(checkbox,%vbox,"SupportsnsShortcut")
+    %checkbox_ns_shortcut->$setText("Network supports cs/ns shortcut")
+    %dialog->%checkbox_ns_shortcut = %checkbox_ns_shortcut
+
+    %hbox = $new(hbox,%dialog)
+    %layout->$addWidget(%hbox,1,0)
+
+    %button_OK = $new(button, %hbox)
+    %button_OK->$setText("OK")
+
+    %button_Cancel = $new(button, %hbox)
+    %button_Cancel->$setText("Cancel")
+
+    # Event handler overrides
+    privateimpl(%dialog,"showevent")
+    {
+        # Populating listbox_network 
+        $$->%listbox_network->$clear
+        %sortedNetworks = $sort($keys(%NickServIntegrationScript_NetworkData))
+        foreach(%network,%sortedNetworks) $$->%listbox_network->$insertitem(%network)
+        
+        # Focussing lineedit_network
+        $$->%listbox_network->$setFocus
+    }
+
+    privateimpl(%listbox_network,"currentItemChangedEvent")
+    {
+        # A network has been selected - obtaining network
+        %network = $$->$currentText
+        
+        # Making sure network is available (the first event firing is before this)
+        if (%network != "")
+        {
+            # Obtaining dialog object ID
+            %dialog = %NickServIntegrationScript_Settings{"GUI"}{"NickServIntegrationScript_EditNetwork"}
+            
+            # Populating relevant widgets
+            %dialog->%lineedit_primary_nick->$setText(%NickServIntegrationScript_NetworkData{%network}{"Primary Nick"})
+            %dialog->%lineedit_password->$setText(%NickServIntegrationScript_NetworkData{%network}{"Password"})
+            %dialog->%checkbox_ns_shortcut->$setChecked(%NickServIntegrationScript_NetworkData{%network}{"canUseNsShortcut"})
+        }
+    }
+
+    privateimpl(%dialog,"OK")
+    {
+        # Obtaining networkToEdit
+        %networkToEdit = $$->%listbox_network->$currentText
+        
+        # Checking to see if networkToEdit has been given
+        if (%networkToEdit == "")
+        {
+            # networkToEdit hasn't been given - erroring and exiting
+            dialog.message("Edit Network With NickServ Integration Script", "Please specify a network to edit.","Warning") { }
+            $$->$hide
+            return
+        }
+        
+        # Obtaining primaryNick
+        %primaryNick = $$->%lineedit_primary_nick->$Text
+        
+        # Checking to see if primaryNick has been given
+        if (%primaryNick == "")
+        {
+            # primaryNick hasn't - erroring and exiting
+            dialog.message("Edit Network With NickServ Integration Script", "Please specify a primary nick to use on "%networkToEdit".","Warning") { }
+            $$->$hide
+            return
+        }
+        
+        # Obtaining password
+        %password = $$->%lineedit_password->$Text
+        
+        # Checking to see if password has been given
+        if (%password == "")
+        {
+            # password hasn't - erroring and exiting
+            dialog.message("Edit Network With NickServ Integration Script", "Please specify a password to ident with for "%primaryNick" on "%networkToEdit".","Warning") { }
+            $$->$hide
+            return
+        }
+        
+        # Obtaining canUseNsShortcut 
+        %canUseNsShortcut = $$->%checkbox_ns_shortcut->$isChecked
+        
+        # Updating network details and saving
+        %NickServIntegrationScript_NetworkData{%networkToEdit}{"Primary Nick"} = %primaryNick
+        %NickServIntegrationScript_NetworkData{%networkToEdit}{"Password"} = %password
+        %NickServIntegrationScript_NetworkData{%networkToEdit}{"canUseNsShortcut"} = %canUseNsShortcut
+        NickServIntegrationScript::Save
+        
+        # Echoing informative message
+        dialog.message("Edit Network With NickServ Integration Script", "Updated network "%networkToEdit"'s details:\n\nPrimary nick: "%primaryNick"\nPassword: "%password"\nUse ns shortcut for NickServ: "%canUseNsShortcut,"Warning") { }
+        $$->$hide
+    }
+
+    privateimpl(%dialog,"Cancel")
+    {
+        # Hiding dialog
+        $$->$hide
+    }
+    
+    objects.connect %button_OK clicked %dialog OK
+    objects.connect %button_Cancel clicked %dialog Cancel
+
+    # Saving dialog object ID
+    %NickServIntegrationScript_Settings{"GUI"}{"NickServIntegrationScript_EditNetwork"} = %dialog
+
+    # Remove Network dialog
+    %dialog = $new(dialog,,"NickServIntegrationScript_RemoveNetwork")
+    %dialog->$setWindowTitle("Remove Network From NickServ Integration Script")
+
+    %vbox = $new(vbox,%dialog,"VBox")
+    %layout = $new(layout,%dialog)
+    %layout->$addRowSpacing(0,30)
+    %layout->$addWidget(%vbox,0,0)
+    
+    %label_network = $new(label,%vbox)
+    %label_network->$setText("Network to remove:")
+    
+    %listbox_network = $new(listbox,%vbox,"NetworkToRemove")
+    %dialog->%listbox_network = %listbox_network
+
+    %hbox = $new(hbox,%dialog)
+    %layout->$addWidget(%hbox,1,0)
+
+    %button_OK = $new(button, %hbox)
+    %button_OK->$setText("OK")
+
+    %button_Cancel = $new(button, %hbox)
+    %button_Cancel->$setText("Cancel")
+
+    # Event handler overrides
+    privateimpl(%dialog,"showevent")
+    {
+        # Populating listbox_network 
+        $$->%listbox_network->$clear
+        %sortedNetworks = $sort($keys(%NickServIntegrationScript_NetworkData))
+        foreach(%network,%sortedNetworks) $$->%listbox_network->$insertitem(%network)
+        
+        # Focussing listbox_network
+        $$->%listbox_network->$setFocus
+    }
+
+    privateimpl(%dialog,"OK")
+    {
+        # Obtaining networkToRemove
+        %networkToRemove = $$->%listbox_network->$currentText
+        
+        # Checking to see if networkToRemove has been given
+        if (%networkToRemove == "")
+        {
+            # networkToRemove hasn't been given - erroring and exiting
+            dialog.message("Remove Network From NickServ Integration Script", "Please specify a network to remove.","Warning") { }
+            $$->$hide
+            return
+        }
+        
+        # Removing network and saving
+        %NickServIntegrationScript_NetworkData{%networkToRemove} = ""
+        NickServIntegrationScript::Save
+        
+        # Echoing informative message
+        dialog.message("Remove Network From NickServ Integration Script", "Network "%networkToRemove" has been removed from this script.","Information") { }
+        $$->$hide
+    }
+
+    privateimpl(%dialog,"Cancel")
+    {
+        # Hiding dialog
+        $$->$hide
+    }
+    
+    objects.connect %button_OK clicked %dialog OK
+    objects.connect %button_Cancel clicked %dialog Cancel
+
+    # Saving dialog object ID
+    %NickServIntegrationScript_Settings{"GUI"}{"NickServIntegrationScript_RemoveNetwork"} = %dialog
+
+    # Network Details dialog
+    %dialog = $new(dialog,,"NickServIntegrationScript_NetworkDetails")
+    %dialog->$setWindowTitle("Network To List Details On")
+
+    %vbox = $new(vbox,%dialog,"VBox")
+    %layout = $new(layout,%dialog)
+    %layout->$addRowSpacing(0,30)
+    %layout->$addWidget(%vbox,0,0)
+    
+    %label_network = $new(label,%vbox)
+    %label_network->$setText("Network to list details on:")
+    
+    %listbox_network = $new(listbox,%vbox,"NetworkToList")
+    %dialog->%listbox_network = %listbox_network
+
+    %hbox = $new(hbox,%dialog)
+    %layout->$addWidget(%hbox,1,0)
+
+    %button_OK = $new(button, %hbox)
+    %button_OK->$setText("OK")
+
+    %button_Cancel = $new(button, %hbox)
+    %button_Cancel->$setText("Cancel")
+
+    # Event handler overrides
+    privateimpl(%dialog,"showevent")
+    {
+        # Populating listbox_network 
+        $$->%listbox_network->$clear
+        %sortedNetworks = $sort($keys(%NickServIntegrationScript_NetworkData))
+        foreach(%network,%sortedNetworks) $$->%listbox_network->$insertitem(%network)
+        
+        # Focussing listbox_network
+        $$->%listbox_network->$setFocus
+    }
+
+    privateimpl(%dialog,"OK")
+    {
+        # Obtaining networkToList
+        %networkToList = $$->%listbox_network->$currentText
+        
+        # Checking to see if networkToList has been given
+        if (%networkToList == "")
+        {
+            # networkToList hasn't been given - erroring and exiting
+            dialog.message("Network To List Details On", "Please specify a network to list details on.","Warning") { }
+            return
+        }
+        
+        # Hiding dialog
+        $$->$hide
+        
+        # Echoing details on network
+        echo "Network "$b%networkToList":"$b
+        echo "Primary nick: "%NickServIntegrationScript_NetworkData{%networkToList}{"Primary Nick"}
+        echo "Password: "%NickServIntegrationScript_NetworkData{%networkToList}{"Password"}
+        echo "Can use ns NickServ shortcut: "%NickServIntegrationScript_NetworkData{%networkToList}{"canUseNsShortcut"}
+    }
+
+    privateimpl(%dialog,"Cancel")
+    {
+        # Hiding dialog
+        $$->$hide
+    }
+    
+    objects.connect %button_OK clicked %dialog OK
+    objects.connect %button_Cancel clicked %dialog Cancel
+
+    # Saving dialog object ID
+    %NickServIntegrationScript_Settings{"GUI"}{"NickServIntegrationScript_NetworkDetails"} = %dialog
+    
+    # Integrating into main toolbar
+    if ($popup.exists("NickServIntegrationScript_Main")) popup.destroy "NickServIntegrationScript_Main"
+    popup.create "NickServIntegrationScript_Main"
+    popup.addItem("NickServIntegrationScript_Main", "Turn script on",,, \%NickServIntegrationScript_Settings{\"Status\"} == \"Off\") NickServIntegrationScript "on"
+    popup.addItem("NickServIntegrationScript_Main", "Turn script off",,, \%NickServIntegrationScript_Settings{\"Status\"} == \"On\") NickServIntegrationScript "off"
+    popup.addSeparator "NickServIntegrationScript_Main"
+    popup.addItem("NickServIntegrationScript_Main", "Add network")
+    {
+        %NickServIntegrationScript_Settings{"GUI"}{"NickServIntegrationScript_AddNetwork"}->$show
+    }
+    popup.addItem("NickServIntegrationScript_Main", "Edit network")
+    {
+        %NickServIntegrationScript_Settings{"GUI"}{"NickServIntegrationScript_EditNetwork"}->$show
+    }
+    popup.addItem("NickServIntegrationScript_Main", "Remove network")
+    {
+        %NickServIntegrationScript_Settings{"GUI"}{"NickServIntegrationScript_RemoveNetwork"}->$show
+    }
+    popup.addSeparator "NickServIntegrationScript_Main"
+    popup.addItem("NickServIntegrationScript_Main", "List details of particular network")
+    {
+        %NickServIntegrationScript_Settings{"GUI"}{"NickServIntegrationScript_NetworkDetails"}->$show
+    }
+    popup.addItem("NickServIntegrationScript_Main", "List all networks with recorded details")
+    {
+        echo "Echoing all integrated networks:"
+        
+        # Looping through all NickServIntegrationScript_NetworkData records
+        foreach(%network,$keys(%NickServIntegrationScript_NetworkData))
+        {
+            echo "-"
+            echo "Network "$b%network":"$b
+            echo "Primary nick: "%NickServIntegrationScript_NetworkData{%network}{"Primary Nick"}
+            echo "Password: "%NickServIntegrationScript_NetworkData{%network}{"Password"}
+            echo "Can use ns NickServ shortcut: "%NickServIntegrationScript_NetworkData{%network}{"canUseNsShortcut"}
+            echo "-"
+        }
+
+        echo "Integrated network echoing completed."
+    }
+    
+    # Adding NickServ Integration Script menu to main script popup (ensuring that it doesn't exist already)
+    popup.delitem -q "Scripts" "NickServIntegrationScript_Main"
+    popup.addExtPopup "Scripts" "NickServIntegrationScript_Main" "NickServ Integration Script" "" "NickServIntegrationScript_Main"
+    
+    # Tying main script popup to KVIrc menu (appears after 'Scripting')
+    setmenu -i=2 "Scripts" "Scripts"
+}
+
+# NickServIntegrationScript::Test alias
+alias(NickServIntegrationScript::Test)
+{
+    # Not needed
+}
+
+# Uninstaller alias
+alias(NickServIntegrationScript::uninstall::uninstall)
+{
+    # All events and aliases should be uninstalled here
+    alias(NickServIntegrationScript) {}
+    alias(NickServIntegrationScript::Save) {}
+    alias(NickServIntegrationScript::Startup) {}
+    alias(NickServIntegrationScript::Test) {}
+    alias(NickServIntegrationScript::uninstall::uninstall) {}
+    event(OnIRC,NickServIntegrationScript) {}
+    event(OnKVIrcStartup,NickServIntegrationScript) {}
+    event(OnNickServNotice,NickServIntegrationScript) {}
+    event(433,NickServIntegrationScript) {}
+    event(437,NickServIntegrationScript) {}
+    event(474,NickServIntegrationScript) {}
+    
+    # Removing popups
+    popup.delitem -q "Scripts" "NickServIntegrationScript_Main"
+    popup.destroy -q "NickServIntegrationScript_Main"
+        
+    # Destroying objects
+    foreach(%object,$keys(%NickServIntegrationScript_Settings{"GUI"}))
+    {
+        destroy %NickServIntegrationScript_Settings{"GUI"}{%object}
+    }
+    
+    # Clearing global variables
+    %NickServIntegrationScript_NetworkData = ""
+    %NickServIntegrationScript_Settings = ""
+}
+
+
+# COMMENTS
+
+# %NickServIntegrationScript_NetworkData format:
+
+# Item: {<Network name>}. Presence indicates that the network is integrated into this script.
+# Item: {<Network name>}{Primary Nick}. Data: Primary nick. This is the nick to be enforced on this network.
+# Item: {<Network name>}{Password}. Data: Password. The password to ident with NickServ associated with the primary nick.
+# Item: {<Network name>}{canUseNsShortcut}. Data: $true/$false. This indicated whether /ns or /msg nickserv must be used to PM NickServ on this network. This also determines wheter /cs or /msg Chanserv is used.
+# Item: {<Network name>}{identSuccessfulTime}. Data: $unixtime. This records the last time ident was successful - used to detect inability to join banned channels after autojoin is called.
+
+# Execution path: 
+# 1. OnIRC, attempt to change nick if it isn't primary.
+# 2. Raw event 433, nick already in use.
+# 3. Attempt to ghost the nick.
+# 4. OnNickServNotice, successful ghosting reported.
+# 5. Attempt to change nick.
+# 6. Raw event 437, can't change nick due to some channels blocking this action.
+# 7. Part relevant channels and try nick change.
+# 8. OnNickServNotice, identification requested, attempt to identify.
+# 9. OnNickServNotice, identification successful, joining all channels including password-protected ones.
+# 10. Raw event 474, unable to join channel I am banned from - request unban from ChanServ.
+# 11. OnChanServNotice, detect successful unban and then use joinpass to attempt to join the channel, repeat 10 onwards as necessary.
+
+# Note that OnNickServNotice also detects and reacts to forceful nick change events (where the identification process was too slow or NickServ never asked) - this attempts to change the nick as in 5.
