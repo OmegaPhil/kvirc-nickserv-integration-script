@@ -64,13 +64,13 @@ If the server responds with 'Unknown command' then the command is not supported 
 
 Edit network dialog:
 
-![Edit network dialog]()
+![Edit network dialog](https://f92fac806bf10a96c0b8-8a0a46e5f1a5cc9854958bc3503f0f88.ssl.cf1.rackcdn.com/media_entries/7476/edit-network-dialog.png)
 
 Works in the same way as the add network dialog.
 
 Remove network dialog:
 
-![Remove network dialog]()
+![Remove network dialog](https://f92fac806bf10a96c0b8-8a0a46e5f1a5cc9854958bc3503f0f88.ssl.cf1.rackcdn.com/media_entries/7477/remove-network-dialog.png)
 
 Select the network you no longer want the script to manage and remove it.
 
