@@ -1,12 +1,12 @@
 NickServ Integration Script is an attempt to implement complete automated NickServ identification and ghosting, replacing KVIrc's NickServ tool. So far I use this to maintain my primary nick on:
 
-BCnet
-freenode
-Immortal-Anime
-Irc2P
-IRCHighway
-LostIRC
-P2P-NET
+* BCnet
+* freenode
+* Immortal-Anime
+* Irc2P
+* IRCHighway
+* LostIRC
+* P2P-NET
 
 Please let me know if you have success with other networks.
 
