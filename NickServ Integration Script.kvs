@@ -886,13 +886,19 @@ alias(NickServIntegrationScript::Startup)
 
         echo "Integrated network echoing completed."
     }
-    
+
+    # Making sure the main 'Scripts' menu command exists
+    if ($(!($popup.exists("Scripts"))))
+    {
+        popup.create "Scripts"
+
+        # Tying main script popup to KVIrc menu (appears after 'Scripting')
+        setmenu -i=2 "Scripts" "Scripts"
+    }
+
     # Adding NickServ Integration Script menu to main script popup (ensuring that it doesn't exist already)
     popup.delitem -q "Scripts" "NickServIntegrationScript_Main"
     popup.addExtPopup "Scripts" "NickServIntegrationScript_Main" "NickServ Integration Script" "" "NickServIntegrationScript_Main"
-    
-    # Tying main script popup to KVIrc menu (appears after 'Scripting')
-    setmenu -i=2 "Scripts" "Scripts"
 }
 
 # NickServIntegrationScript::Test alias
