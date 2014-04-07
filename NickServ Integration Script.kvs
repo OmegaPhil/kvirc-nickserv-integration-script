@@ -888,13 +888,10 @@ alias(NickServIntegrationScript::Startup)
     }
 
     # Making sure the main 'Scripts' menu command exists
-    if ($(!($popup.exists("Scripts"))))
-    {
-        popup.create "Scripts"
+    if ($(!($popup.exists("Scripts")))) popup.create "Scripts"
 
-        # Tying main script popup to KVIrc menu (appears after 'Scripting')
-        setmenu -i=2 "Scripts" "Scripts"
-    }
+    # Tying main script popup to KVIrc menu (appears after 'Scripting') - this must be done on every program startup
+    setmenu -i=2 "Scripts" "Scripts"
 
     # Adding NickServ Integration Script menu to main script popup (ensuring that it doesn't exist already)
     popup.delitem -q "Scripts" "NickServIntegrationScript_Main"
