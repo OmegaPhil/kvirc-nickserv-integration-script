@@ -140,7 +140,8 @@ event(OnNickServNotice,NickServIntegrationScript)
     }
 
     # Detecting successfull ghost kill messages
-    if (%message == "Ghost with your nick has been killed." || %message == "Ghost with your nickname has been killed.")
+    # Freenode: '<nick> has been ghosted.'
+    if (%message == "Ghost with your nick has been killed." || %message == "Ghost with your nickname has been killed." || $str.contains(%message, "has been ghosted."))
     {
         # Ghost has been successfully killed - Changing nick and exiting
         nick %primaryNick
@@ -185,7 +186,7 @@ event(OnNickServNotice,NickServIntegrationScript)
         nick %primaryNick
         return
     }
-    
+
     # Detecting freenode-based 'nick released' events (to do with enforce functionality, the nick is blocked after someone is killed)
     if (%message == $b%primaryNick$b" has been released.")
     {
@@ -243,10 +244,13 @@ event(433,NickServIntegrationScript)
 
 # Normal: Cannot change nickname while banned or moderated on channel
 # Example: 'irc.impact-media.me.uk 437 OmegaPhil #NEWS Cannot change nickname while banned or moderated on channel'
+# Example: ' :wolfe.freenode.net 435 OmegaPhil1 OmegaPhil #radeon :Cannot change nickname while banned on channel'
 # Freenode: Enforce flag set on nick, needs to be released
 # Example: 'calvino.freenode.net 437 * OmegaPhil Nick/channel is temporarily unavailable'
-event(437,NickServIntegrationScript)
+event(435,NickServIntegrationScript)
 {
+    # Freenode now has this as event 435 (xx.09.14 onwards?)
+
     # Exiting if script is currently off
     if (%NickServIntegrationScript_Settings{"Status"} == "Off") return
 
@@ -254,62 +258,28 @@ event(437,NickServIntegrationScript)
     if (%NickServIntegrationScript_NetworkData{$context.networkName} == "") return
 
     # Debug code
-    # echo "Debug - Event 437 detected: "$0-
+    #echo "Debug - Event 435 detected: "$0-
     # return
 
-    # Obtaining primaryNick
-    %primaryNick = %NickServIntegrationScript_NetworkData{$context.networkName}{"Primary Nick"}
+    # Dealing with event, passing blocking channel
+    NickServIntegrationScript::CannotChangeNick $4
+}
+event(437,NickServIntegrationScript)
+{
+    # Non-Freenode servers have this as event 437
 
-    # Making sure the primary nick has been recorded for this network
-    if (%primaryNick == "")
-    {
-        # The primary nick hasn't been recorded for this network - erroring and exiting
-        error "The network "$context.networkName" is currently monitored with this script, however a primary nick has not been recorded."
-    }
+    # Exiting if script is currently off
+    if (%NickServIntegrationScript_Settings{"Status"} == "Off") return
 
-    # Checking if the event comes from the freenode network or not
-    if ($context.networkName != "freenode")
-    {
-        # It doesn't - this event means that I have likely been given a guest nick, and on my script's attempt to change the nick back, I have been refused by the IRC server with this numeric 
-        # Obtaining relevant channel
-        %channel = $3
-        
-        # Informative message
-        echo "Parting "%channel" due to unauthorised blocking of attempted nick change back to the primary nick "%primaryNick"..."
-        
-        # Parting channel
-        part %channel
-        
-        # Attempting to change nick again
-        nick %primaryNick
-        return
-    }
-    else
-    {
-        # It does come from freenode - obtaining password
-        %password = %NickServIntegrationScript_NetworkData{$context.networkName}{"Password"}
-        
-        # Making sure the password has been recorded for this network
-        if (%password == "")
-        {
-            # The password hasn't been recorded for this network - erroring and exiting
-            error "The network "$context.networkName" is currently monitored with this script, however a password has not been recorded."
-        }
-        
-        # Obtaining canUseNsShortcut. KVIrc script cant differentiate between 0 and "", so assume the shortcut cant be used if this isnt set
-        %canUseNsShortcut = %NickServIntegrationScript_NetworkData{$context.networkName}{"canUseNsShortcut"}
-        
-        # 'Releasing nick' based on NickServ shortcut presence or not, then exiting
-        if (%canUseNsShortcut == $true)
-        {
-            ns release %primaryNick %password
-        }
-        else
-        {
-            msg NickServ release %primaryNick %password
-        }
-        return
-    }
+    # Exiting if this network is not integrated into this script
+    if (%NickServIntegrationScript_NetworkData{$context.networkName} == "") return
+
+    # Debug code
+    #echo "Debug - Event 437 detected: "$0-
+    # return
+
+    # Dealing with event, passing blocking channel
+    NickServIntegrationScript::CannotChangeNick $3
 }
 
 # Unable to join banned channel event
@@ -407,6 +377,67 @@ alias(NickServIntegrationScript)
     
     # Warning user of an unrecognised command
     warning "Command unrecognised - use h/help for usage instructions."
+}
+
+# NickServIntegrationScript::CannotChangeNick alias
+alias(NickServIntegrationScript::CannotChangeNick)
+{
+    # Making sure channel was passed
+    if ($0 == "") error "No blocking channel has been passed."
+    %channel = $0
+
+    # Obtaining primaryNick
+    %primaryNick = %NickServIntegrationScript_NetworkData{$context.networkName}{"Primary Nick"}
+
+    # Making sure the primary nick has been recorded for this network
+    if (%primaryNick == "")
+    {
+        # The primary nick hasn't been recorded for this network - erroring and exiting
+        error "The network "$context.networkName" is currently monitored with this script, however a primary nick has not been recorded."
+    }
+
+    # WIP: There seems to be some conflation here of different events - Freenode also has the normal ghost, nick change, banned channel route, yet the code below never ran for Freenode, it only 'released' the nick. This is probably due to Freenode renumbering numeric events... I want to disable the enforce stuff for now as it breaks the channel parting stuff - need to wait until nick is frozen again before doing further testing
+    # Checking if the event comes from the freenode network or not
+    #~ if ($context.networkName != "freenode")
+    #~ {
+        # It doesn't - this event means that I have likely been given a guest nick, and on my script's attempt to change the nick back, I have been refused by the IRC server with this numeric
+
+        # Informative message
+        echo "Parting "%channel" due to unauthorised blocking of attempted nick change back to the primary nick "%primaryNick"..."
+
+        # Parting channel
+        part %channel
+
+        # Attempting to change nick again
+        nick %primaryNick
+        return
+#    }
+    #~ else
+    #~ {
+        #~ # It does come from freenode - obtaining password
+        #~ %password = %NickServIntegrationScript_NetworkData{$context.networkName}{"Password"}
+        #~
+        #~ # Making sure the password has been recorded for this network
+        #~ if (%password == "")
+        #~ {
+            #~ # The password hasn't been recorded for this network - erroring and exiting
+            #~ error "The network "$context.networkName" is currently monitored with this script, however a password has not been recorded."
+        #~ }
+        #~
+        #~ # Obtaining canUseNsShortcut. KVIrc script cant differentiate between 0 and "", so assume the shortcut cant be used if this isnt set
+        #~ %canUseNsShortcut = %NickServIntegrationScript_NetworkData{$context.networkName}{"canUseNsShortcut"}
+        #~
+        #~ # 'Releasing nick' based on NickServ shortcut presence or not, then exiting
+        #~ if (%canUseNsShortcut == $true)
+        #~ {
+            #~ ns release %primaryNick %password
+        #~ }
+        #~ else
+        #~ {
+            #~ msg NickServ release %primaryNick %password
+        #~ }
+        #~ return
+    #~ }
 }
 
 # NickServIntegrationScript::Save alias
@@ -909,6 +940,7 @@ alias(NickServIntegrationScript::uninstall::uninstall)
 {
     # All events and aliases should be uninstalled here
     alias(NickServIntegrationScript) {}
+    alias(NickServIntegrationScript::CannotChangeNick) {}
     alias(NickServIntegrationScript::Save) {}
     alias(NickServIntegrationScript::Startup) {}
     alias(NickServIntegrationScript::Test) {}
@@ -917,6 +949,7 @@ alias(NickServIntegrationScript::uninstall::uninstall)
     event(OnKVIrcStartup,NickServIntegrationScript) {}
     event(OnNickServNotice,NickServIntegrationScript) {}
     event(433,NickServIntegrationScript) {}
+    event(435,NickServIntegrationScript) {}
     event(437,NickServIntegrationScript) {}
     event(474,NickServIntegrationScript) {}
     
